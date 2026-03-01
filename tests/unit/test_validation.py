@@ -9,6 +9,7 @@ from llm_quantize.lib.validation import (
     get_file_size,
     update_validation_status,
     validate_output,
+    validate_pruned_safetensors,
 )
 from llm_quantize.models import OutputFormat, QuantizedModel, ValidationStatus
 
@@ -253,6 +254,104 @@ class TestUpdateValidationStatus:
         assert updated.validation_status == ValidationStatus.INVALID
         assert updated.quantization_metadata is not None
         assert "validation_error" in updated.quantization_metadata
+
+
+class TestValidatePrunedSafetensors:
+    """Tests for validate_pruned_safetensors function."""
+
+    def test_valid_pruned_model(self, temp_dir: Path) -> None:
+        """Test valid pruned model directory passes validation."""
+        model_dir = temp_dir / "pruned_model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            '{"num_hidden_layers": 56, "hidden_size": 5120}'
+        )
+        (model_dir / "model.safetensors").write_bytes(b"\x00" * 100)
+
+        result = validate_pruned_safetensors(model_dir)
+        assert result.is_valid is True
+
+    def test_must_be_directory(self, temp_dir: Path) -> None:
+        """Test pruned model must be a directory."""
+        f = temp_dir / "not_a_dir.bin"
+        f.write_bytes(b"\x00")
+
+        result = validate_pruned_safetensors(f)
+        assert result.is_valid is False
+        assert "must be a directory" in result.error_message
+
+    def test_missing_config(self, temp_dir: Path) -> None:
+        """Test missing config.json fails."""
+        model_dir = temp_dir / "pruned_model"
+        model_dir.mkdir()
+        (model_dir / "model.safetensors").write_bytes(b"\x00" * 100)
+
+        result = validate_pruned_safetensors(model_dir)
+        assert result.is_valid is False
+        assert "config.json" in result.error_message
+
+    def test_missing_required_config_fields(self, temp_dir: Path) -> None:
+        """Test config.json without required fields fails."""
+        model_dir = temp_dir / "pruned_model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text('{"vocab_size": 1000}')
+        (model_dir / "model.safetensors").write_bytes(b"\x00" * 100)
+
+        result = validate_pruned_safetensors(model_dir)
+        assert result.is_valid is False
+        assert "missing required fields" in result.error_message
+
+    def test_missing_weight_files(self, temp_dir: Path) -> None:
+        """Test directory without safetensors files fails."""
+        model_dir = temp_dir / "pruned_model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            '{"num_hidden_layers": 56, "hidden_size": 5120}'
+        )
+
+        result = validate_pruned_safetensors(model_dir)
+        assert result.is_valid is False
+        assert "missing safetensors" in result.error_message
+
+    def test_invalid_config_json(self, temp_dir: Path) -> None:
+        """Test malformed config.json fails."""
+        model_dir = temp_dir / "pruned_model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text("{not valid json")
+        (model_dir / "model.safetensors").write_bytes(b"\x00" * 100)
+
+        result = validate_pruned_safetensors(model_dir)
+        assert result.is_valid is False
+        assert "Invalid config.json" in result.error_message
+
+    def test_with_pruning_plan(self, temp_dir: Path) -> None:
+        """Test valid model with pruning_plan.json passes."""
+        model_dir = temp_dir / "pruned_model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            '{"num_hidden_layers": 56, "hidden_size": 5120}'
+        )
+        (model_dir / "model.safetensors").write_bytes(b"\x00" * 100)
+        (model_dir / "pruning_plan.json").write_text(
+            '{"mlp_new_intermediate_size": 12224}'
+        )
+
+        result = validate_pruned_safetensors(model_dir)
+        assert result.is_valid is True
+
+    def test_invalid_pruning_plan(self, temp_dir: Path) -> None:
+        """Test invalid pruning_plan.json fails."""
+        model_dir = temp_dir / "pruned_model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            '{"num_hidden_layers": 56, "hidden_size": 5120}'
+        )
+        (model_dir / "model.safetensors").write_bytes(b"\x00" * 100)
+        (model_dir / "pruning_plan.json").write_text("{broken json")
+
+        result = validate_pruned_safetensors(model_dir)
+        assert result.is_valid is False
+        assert "pruning_plan.json" in result.error_message
 
 
 class TestGetFileSize:
